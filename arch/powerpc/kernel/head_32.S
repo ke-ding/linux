@@ -1195,11 +1195,11 @@ setup_disp_bat:
 
 #ifdef CONFIG_PPC_EARLY_DEBUG_CPM
 setup_cpm_bat:
-	lis	r8, 0xf000
+	lis	r8, 0xe000
 	ori	r8, r8,	0x002a
 	mtspr	SPRN_DBAT1L, r8
 
-	lis	r11, 0xf000
+	lis	r11, 0xe000
 	ori	r11, r11, (BL_1M << 2) | 2
 	mtspr	SPRN_DBAT1U, r11
 

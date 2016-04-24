@@ -114,6 +114,7 @@ static int fs_mii_bitbang_init(struct mii_bus *bus, struct device_node *np)
 	const u32 *data;
 	int mdio_pin, mdc_pin, len;
 	struct bb_info *bitbang = bus->priv;
+	static u8 dev_no = 0;	// by Milo
 
 	int ret = of_address_to_resource(np, 0, &res);
 	if (ret)
@@ -126,7 +127,7 @@ static int fs_mii_bitbang_init(struct mii_bus *bus, struct device_node *np)
 	 * we get is an int, and the odds of multiple bitbang mdio buses
 	 * is low enough that it's not worth going too crazy.
 	 */
-	snprintf(bus->id, MII_BUS_ID_SIZE, "%x", res.start);
+	snprintf(bus->id, MII_BUS_ID_SIZE, "%x.%x", res.start, dev_no++);
 
 	data = of_get_property(np, "fsl,mdio-pin", &len);
 	if (!data || len != 4)
