@@ -1,0 +1,254 @@
+/*
+ * Device Tree for MPC8270
+ *
+ * This program is free software; you can redistribute  it and/or modify it
+ * under  the terms of  the GNU General  Public License as published by the
+ * Free Software Foundation;  either version 2 of the  License, or (at your
+ * option) any later version.
+ */
+
+/dts-v1/;
+
+/ {
+	model = "mpc8270";
+	compatible = "fsl,pq2fads";
+	#address-cells = <1>;
+	#size-cells = <1>;
+
+	aliases {
+		ethernet0 = &enet0;
+		ethernet1 = &enet1;
+		serial0 = &serial0;
+		serial1 = &serial1;
+	};
+
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		cpu@0 {
+			device_type = "cpu";
+			reg = <0x0>;
+			d-cache-line-size = <32>;
+			i-cache-line-size = <32>;
+			d-cache-size = <16384>;
+			i-cache-size = <16384>;
+			timebase-frequency = <0>;
+			clock-frequency = <0>;
+		};
+	};
+
+	memory {
+		device_type = "memory";
+		reg = <0x0 0x08000000>;
+	};
+
+	localbus@e0010100 {
+		compatible = "fsl,mpc8280-localbus",
+		             "fsl,pq2-localbus";
+		#address-cells = <2>;
+		#size-cells = <1>;
+		reg = <0xe0010100 0x60>;
+
+		ranges = <0x0 0x0 0xf0000000 0x2000000>;
+
+		flash@0,0 {
+			compatible = "cfi-flash";
+			reg = <0x0 0x0 0x2000000>;
+			#address-cells = <1>;
+			#size-cells = <1>;
+			bank-width = <4>;
+			device-width = <1>;
+
+			/* compact ramfs configuration
+			partition@0x00000000 {
+				label = "reserved";
+				reg = <0x00000000 0x00600000>;
+				read-only;
+			};
+			partition@0x00b00000 {
+				label = "jffs2fs";
+				reg = <0x00600000 0x01a00000>;
+			};*/
+			/* ramfs configuration with python support
+			partition@0x00000000 {
+				label = "reserved";
+				reg = <0x00000000 0x00b00000>;
+				read-only;
+			};
+			partition@0x00b00000 {
+				label = "jffs2fs";
+				reg = <0x00b00000 0x01a00000>;
+			};*/
+			/* jffs2 configuration with python support */
+			partition@0x00000000 {
+				label = "reserved";
+				reg = <0x00000000 0x00300000>;
+				read-only;
+			};
+			partition@0x00300000 {
+				label = "os.ro.jffs2fs";
+				reg = <0x00300000 0x00c00000>;
+				read-only;
+			};
+			partition@0x00b00000 {
+				label = "app.rw.jffs2fs";
+				reg = <0x00f00000 0x01100000>;
+			};
+		};
+
+		bcsr@1,0 {
+			reg = <0x1 0x0 0x20>;
+			compatible = "fsl,pq2fads-bcsr";
+		};
+
+		PCI_PIC: pic@8,0 {
+			#interrupt-cells = <1>;
+			interrupt-controller;
+			reg = <0x8 0x0 0x8>;
+			compatible = "fsl,pq2ads-pci-pic";
+			interrupt-parent = <&PIC>;
+			interrupts = <24 8>;
+		};
+	};
+
+	soc@e0000000 {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		device_type = "soc";
+		compatible = "fsl,mpc8280", "fsl,pq2-soc";
+		ranges = <0x0 0xe0000000 0x53000>;
+
+		// Temporary -- will go away once kernel uses ranges for get_immrbase().
+		reg = <0xe0000000 0x53000>;
+
+		cpm@119c0 {
+			#address-cells = <1>;
+			#size-cells = <1>;
+			#interrupt-cells = <2>;
+			compatible = "fsl,mpc8280-cpm", "fsl,cpm2";
+			reg = <0x119c0 0x30>;
+			ranges;
+
+			muram@0 {
+				#address-cells = <1>;
+				#size-cells = <1>;
+				ranges = <0x0 0x0 0x10000>;
+
+				data@0 {
+					compatible = "fsl,cpm-muram-data";
+					reg = <0x0 0x4000 0x8000 0x4000>;
+				};
+			};
+
+			brg@119f0 {
+				compatible = "fsl,mpc8280-brg",
+				             "fsl,cpm2-brg",
+				             "fsl,cpm-brg";
+				reg = <0x119f0 0x10 0x115f0 0x10>;
+			};
+
+			serial0: serial@11a82 {
+				device_type = "serial";
+				compatible = "fsl,cpm2-smc-uart";
+				reg = <0x11a80 0x10 0x87fc 2>;
+				interrupts = <4 8>;
+				interrupt-parent = <&PIC>;
+				fsl,cpm-brg = <7>;
+				fsl,cpm-command = <0x1d000000>;
+			};
+
+			serial1: serial@11a92 {
+				device_type = "serial";
+				compatible = "fsl,cpm2-smc-uart";
+				reg = <0x11a90 0x10 0x88fc 2>;
+				interrupts = <5 8>;
+				interrupt-parent = <&PIC>;
+				fsl,cpm-brg = <8>;
+				fsl,cpm-command = <0x21200000>;
+			};
+
+			fserial: fcc1@11300 {
+				device_type = "serial";
+				compatible = "fsl,mpc8280-fcc-serial",
+				             "fsl,cpm2-fcc-serial";
+				reg = <0x11300 0x20 0x8400 0x100 0x11390 0x1>;
+				interrupts = <32 8>;
+				interrupt-parent = <&PIC>;
+				fsl,cpm-command = <0x12000000>;
+			};
+
+			enet0: ethernet@11320 {
+				device_type = "network";
+				compatible = "fsl,mpc8280-fcc-enet",
+				             "fsl,cpm2-fcc-enet";
+				reg = <0x11320 0x20 0x8500 0x100 0x113b0 0x1>;
+				interrupts = <33 8>;
+				interrupt-parent = <&PIC>;
+				phy-handle = <&PHY0>;
+				linux,network-index = <0>;
+				fsl,cpm-command = <0x16200300>;
+				local-mac-address = [de ad be ef 70 01];
+			};
+
+			enet1: ethernet@11340 {
+				device_type = "network";
+				compatible = "fsl,mpc8280-fcc-enet",
+				             "fsl,cpm2-fcc-enet";
+				reg = <0x11340 0x20 0x8600 0x100 0x113d0 0x1>;
+				interrupts = <34 8>;
+				interrupt-parent = <&PIC>;
+				phy-handle = <&PHY1>;
+				linux,network-index = <1>;
+				fsl,cpm-command = <0x1a400300>;
+				local-mac-address = [de ad be ef 70 02];
+			};
+
+			mdio0@10d60 {
+				device_type = "mdio";
+				compatible = "fsl,cpm2-mdio-bitbang";
+				#address-cells = <1>;
+				#size-cells = <0>;
+				reg = <0x10d60 0x14>;
+				fsl,mdio-pin = <11>;
+				fsl,mdc-pin = <10>;
+
+				PHY0: ethernet-phy@0 {
+					interrupt-parent = <&PIC>;
+					interrupts = <25 2>;
+					reg = <0x3>;
+					device_type = "ethernet-phy";
+				};
+			};
+
+			mdio1@10d60 {
+				device_type = "mdio";
+				compatible = "fsl,cpm2-mdio-bitbang";
+				#address-cells = <1>;
+				#size-cells = <0>;
+				reg = <0x10d60 0x14>;
+				fsl,mdio-pin = <13>;
+				fsl,mdc-pin = <12>;
+
+				PHY1: ethernet-phy@1 {
+					interrupt-parent = <&PIC>;
+					interrupts = <25 2>;
+					reg = <0x3>;
+					device_type = "ethernet-phy";
+				};
+			};
+		};
+
+		PIC: interrupt-controller@10c00 {
+			#interrupt-cells = <2>;
+			interrupt-controller;
+			reg = <0x10c00 0x80>;
+			compatible = "fsl,mpc8280-pic", "fsl,cpm2-pic";
+		};
+
+	};
+
+	chosen {
+		linux,stdout-path = "/soc/cpm/serial@11a82";
+	};
+};
