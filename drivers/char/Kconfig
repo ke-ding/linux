@@ -603,5 +603,13 @@ config TILE_SROM
 
 source "drivers/char/xillybus/Kconfig"
 
+config FS_FCC_SERIAL
+	bool "Freescale FCC transparent mode driver"
+	depends on CPM2
+	default n
+	---help---
+	  This device provides character-level read-write access
+	  to the FCC port via /dev/fccX.
+
 endmenu
 
