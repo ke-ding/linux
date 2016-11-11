@@ -31,7 +31,7 @@ MODULE_VERSION(DRV_MODULE_VERSION);
 #define FCC_SERIAL_TXB	((u32)0x00020000)	/* A buffer was transmitted */
 #define FCC_SERIAL_RXB	((u32)0x00010000)	/* A buffer was received */
 
-#define FCC_MAX_BUFZ	8192
+#define FCC_MAX_BUFZ	(64*1024-1)
 #define BD_RNUM		2
 #define BD_TNUM		16
 #define BD_NUM		(BD_RNUM + BD_TNUM)
