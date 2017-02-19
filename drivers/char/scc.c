@@ -8,39 +8,40 @@
 #include <linux/seq_file.h>
 #include <linux/interrupt.h>
 #include <linux/of_platform.h>
-#include <linux/proc_fs.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
 #include <linux/dma-mapping.h>
+#include <linux/fs.h>
+#include <linux/slab.h>
 
 #include <asm/uaccess.h>
 #include <asm/cpm2.h>
 
 #define DRV_MODULE_NAME		"scc_serial"
 #define DRV_MODULE_VERSION	"1.0"
+#define DEV_NAME		"scc"
 
 MODULE_AUTHOR("milo <milod@163.com>");
 MODULE_DESCRIPTION("freescale 8270 scc driver");
 MODULE_LICENSE("GPL");
 MODULE_VERSION(DRV_MODULE_VERSION);
 
-#define FCC_SERIAL_GRA	((u32)0x00800000)	/* Graceful stop complete */
-#define FCC_SERIAL_TXE	((u32)0x00100000)	/* Transmit Error */
-#define FCC_SERIAL_RXF	((u32)0x00080000)	/* Full frame received */
-#define FCC_SERIAL_BSY	((u32)0x00040000)	/* Busy.  Rx Frame dropped */
-#define FCC_SERIAL_TXB	((u32)0x00020000)	/* A buffer was transmitted */
-#define FCC_SERIAL_RXB	((u32)0x00010000)	/* A buffer was received */
+#define SCC_TP_GRA	((ushort)0x0080)	/* Graceful stop complete */
+#define SCC_TP_TXE	((ushort)0x0010)	/* Transmit Error */
+#define SCC_TP_BSY	((ushort)0x0004)	/* Busy */
+#define SCC_TP_TXB	((ushort)0x0002)	/* A buffer was transmitted */
+#define SCC_TP_RXB	((ushort)0x0001)	/* A buffer was received */
 
-#define FCC_MAX_BUFZ	(64*1024-1)
+#define NUM_OF_SCC_DEV	4
+#define SCC_MAX_BUFZ	(64*1024-1)
 #define BD_RNUM		2
 #define BD_TNUM		16
 #define BD_NUM		(BD_RNUM + BD_TNUM)
 
-struct {
+typedef struct {
 	struct device *dev;
 	void __iomem *hwreg;    /* hw registers        */
 	void __iomem *sccp;     /* parameter ram       */
-	u32          mem;       /* FCC DPRAM */
 	dma_addr_t   ring_mem_addr;
 	void __iomem *ring_base;
 
@@ -54,41 +55,47 @@ struct {
 	u32          tcur;
 
 	u32          cmd;
-	int          major;
-} scc_dev;
+	int          minor;
+	char         name[32];
+}scc_dev_t;
 
-static DECLARE_WAIT_QUEUE_HEAD(fcc_write_wq);
-static DECLARE_WAIT_QUEUE_HEAD(fcc_read_wq);
+static DECLARE_WAIT_QUEUE_HEAD(scc_write_wq);
+static DECLARE_WAIT_QUEUE_HEAD(scc_read_wq);
 
-inline static u32 get_fcce(void)
+static scc_dev_t scc_dev_array[NUM_OF_SCC_DEV];
+static int dev_nr = -1;
+
+inline static u32 get_scce(scc_dev_t *scc_dev)
 {
-	return in_be32(scc_dev.hwreg+0x10);
+	return in_be32(scc_dev->hwreg+0x10);
 }
 
-inline static void set_fcce(u32 val)
+inline static void set_scce(scc_dev_t *scc_dev, u32 val)
 {
-	out_be32(scc_dev.hwreg+0x10, val);
+	out_be32(scc_dev->hwreg+0x10, val);
 }
 
-static irqreturn_t fcc_interrupt(int irq, void *dev_id)
+static irqreturn_t scc_interrupt(int irq, void *dev_id)
 {
+	scc_dev_t *scc_dev = (scc_dev_t *)dev_id;
+
 	u32 int_events;
 	int nr;
 	int handled;
 
 	nr = 0;
-	while ((int_events = get_fcce()) != 0) {
+	while ((int_events = get_scce(scc_dev)) != 0) {
 		nr++;
 
 	//printk(KERN_ERR"(MILO)fcce=%08x\n", int_events);
 		// clear events
-		set_fcce(int_events);
+		set_scce(scc_dev, int_events);
 
-		if (int_events & FCC_SERIAL_RXF)
-			wake_up_interruptible(&fcc_read_wq);
+		if (int_events & SCC_TP_RXB)
+			wake_up_interruptible(&scc_read_wq);
 
-		if (int_events & FCC_SERIAL_TXB)
-			wake_up_interruptible(&fcc_write_wq);
+		if (int_events & SCC_TP_TXB)
+			wake_up_interruptible(&scc_write_wq);
 	}
 
 	handled = nr > 0;
@@ -105,13 +112,13 @@ static int scc_dev_close(struct inode *inode, struct file *file)
 	return 0;
 }
 
-int is_sndbuf_available(void)
+static int is_sndbuf_available(scc_dev_t *scc_dev)
 {
 	cbd_t __iomem *bdp;
-	u32 tcur = scc_dev.tcur;
+	u32 tcur = scc_dev->tcur;
 	int ret;
 
-	bdp = scc_dev.ring_base + BD_RNUM*sizeof(cbd_t) + tcur*sizeof(cbd_t);
+	bdp = scc_dev->ring_base + BD_RNUM*sizeof(cbd_t) + tcur*sizeof(cbd_t);
 	ret = !(in_be16(&bdp->cbd_sc) & BD_SC_READY);
 	//printk(KERN_ERR"(MILO)tcur=%d\n", tcur);
 	//printk(KERN_ERR"(MILO)snd_avail=%d\n", !(bdp->cbd_sc & BD_SC_READY));
@@ -121,42 +128,45 @@ int is_sndbuf_available(void)
 
 static ssize_t scc_dev_write(struct file *file, const char __user *buf, size_t count, loff_t *offset)
 {
+	unsigned int minor = iminor(file_inode(file));
+	scc_dev_t *scc_dev = scc_dev_array + minor;
+
 	cbd_t __iomem *bdp;
-	u32 tcur = scc_dev.tcur;
+	u32 tcur = scc_dev->tcur;
 	u16 wrap;
 
-	if (count > FCC_MAX_BUFZ)
-		count = FCC_MAX_BUFZ;
+	if (count > SCC_MAX_BUFZ)
+		count = SCC_MAX_BUFZ;
 
-	wait_event_interruptible(fcc_write_wq, is_sndbuf_available());
+	wait_event_interruptible(scc_write_wq, is_sndbuf_available(scc_dev));
 
-	if (!is_sndbuf_available())
+	if (!is_sndbuf_available(scc_dev))
 		return 0;
 
-	bdp = scc_dev.ring_base + BD_RNUM*sizeof(cbd_t) + tcur*sizeof(cbd_t);
-	//sprintf(scc_dev.tbufv[0], "hello1\n");
-	//bdp->cbd_bufaddr = scc_dev.tbuf[0];
-	copy_from_user(scc_dev.tbufv[tcur], buf, count);
+	bdp = scc_dev->ring_base + BD_RNUM*sizeof(cbd_t) + tcur*sizeof(cbd_t);
+	//sprintf(scc_dev->tbufv[0], "hello1\n");
+	//bdp->cbd_bufaddr = scc_dev->tbuf[0];
+	copy_from_user(scc_dev->tbufv[tcur], buf, count);
 	bdp->cbd_datlen = count;
 	wrap = (tcur < BD_TNUM - 1) ? 0 : BD_SC_WRAP;
 	//setbits16(&bdp->cbd_sc, BD_SC_READY|BD_SC_LAST|BD_SC_INTRPT|wrap);
 	out_be16(&bdp->cbd_sc, BD_SC_READY|BD_SC_LAST|BD_SC_INTRPT|wrap);
 	if (wrap)
-		scc_dev.tcur = 0;
+		scc_dev->tcur = 0;
 	else
-		scc_dev.tcur++;
+		scc_dev->tcur++;
 	//printk(KERN_ERR"(MILO)tcount=%d\n", count);
 
 	return count;
 }
 
-int is_rcvdat_available(void)
+static int is_rcvdat_available(scc_dev_t *scc_dev)
 {
 	cbd_t __iomem *bdp;
-	u32 rcur = scc_dev.rcur;
+	u32 rcur = scc_dev->rcur;
 	int ret;
 
-	bdp = scc_dev.ring_base + rcur*sizeof(cbd_t);
+	bdp = scc_dev->ring_base + rcur*sizeof(cbd_t);
 	ret = !(in_be16(&bdp->cbd_sc) & BD_SC_EMPTY);
 
 #if 0
@@ -165,9 +175,9 @@ int is_rcvdat_available(void)
 	printk(KERN_ERR"(MILO)cbd_sc=%04x\n", in_be16(&bdp->cbd_sc));
 
 	printk(KERN_ERR"(MILO)-------\n");
-	bdp = scc_dev.ring_base + 0*sizeof(cbd_t);
+	bdp = scc_dev->ring_base + 0*sizeof(cbd_t);
 	printk(KERN_ERR"(MILO)0cbd_sc=%04x\n", in_be16(&bdp->cbd_sc));
-	bdp = scc_dev.ring_base + 1*sizeof(cbd_t);
+	bdp = scc_dev->ring_base + 1*sizeof(cbd_t);
 	printk(KERN_ERR"(MILO)1cbd_sc=%04x\n", in_be16(&bdp->cbd_sc));
 	printk(KERN_ERR"(MILO)-------\n");
 #endif
@@ -177,26 +187,29 @@ int is_rcvdat_available(void)
 
 static ssize_t scc_dev_read(struct file *file, char __user *buf, size_t count, loff_t *offset)
 {
+	unsigned int minor = iminor(file_inode(file));
+	scc_dev_t *scc_dev = scc_dev_array + minor;
+
 	cbd_t __iomem *bdp;
-	u32 rcur = scc_dev.rcur;
+	u32 rcur = scc_dev->rcur;
 	u16 wrap;
 
-	wait_event_interruptible(fcc_read_wq, is_rcvdat_available());
+	wait_event_interruptible(scc_read_wq, is_rcvdat_available(scc_dev));
 
-	if (!is_rcvdat_available())
+	if (!is_rcvdat_available(scc_dev))
 		return 0;
 
-	bdp = scc_dev.ring_base + rcur*sizeof(cbd_t);
+	bdp = scc_dev->ring_base + rcur*sizeof(cbd_t);
 	if (count > bdp->cbd_datlen)
 		count = bdp->cbd_datlen;
-	copy_to_user(buf, scc_dev.rbufv[rcur], count);
+	copy_to_user(buf, scc_dev->rbufv[rcur], count);
 	wrap = (rcur < BD_RNUM - 1) ? 0 : BD_SC_WRAP;
 	//setbits16(&bdp->cbd_sc, BD_SC_EMPTY|BD_SC_INTRPT|wrap);
 	out_be16(&bdp->cbd_sc, BD_SC_EMPTY|BD_SC_INTRPT|wrap);
 	if (wrap)
-		scc_dev.rcur = 0;
+		scc_dev->rcur = 0;
 	else
-		scc_dev.rcur++;
+		scc_dev->rcur++;
 	//printk(KERN_ERR"(MILO)tcount=%d\n", count);
 
 	return count;
@@ -211,213 +224,201 @@ static struct file_operations scc_dev_fops = {
 	.write		= scc_dev_write,
 };
 
-static int fcc_proc_show(struct seq_file *seq, void *v)
-{
-	seq_printf(seq, "not implemented yet(%d)\n", 0);
-
-	return  0;
-}
-
-static int fcc_proc_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, fcc_proc_show, NULL);
-}
-
-static const struct file_operations fcc_proc_fops = {
-	.owner          = THIS_MODULE,
-	.open           = fcc_proc_open,
-	.read           = seq_read,
-	.llseek         = seq_lseek,
-	.release        = single_release,
-};
-
-void init_bds(void)
+static void init_bds(scc_dev_t *scc_dev)
 {
 	cbd_t __iomem *bdp;
 	int i;
 
 	/*
-	fep->dirty_tx = fep->cur_tx = fep->tx_bd_base;
-	fep->tx_free = fep->tx_ring;
-	fep->cur_rx = fep->rx_bd_base;
-	*/
-
-	/*
 	 * Initialize the receive buffer descriptors.
 	 */
-	for (i = 0, bdp = scc_dev.ring_base; i < BD_RNUM; i++, bdp++) {
-		scc_dev.rbufv[i] = (void __iomem __force *)
-			dma_alloc_coherent(scc_dev.dev,
-					   FCC_MAX_BUFZ,
-					   &scc_dev.rbuf[i],
+	for (i = 0, bdp = scc_dev->ring_base; i < BD_RNUM; i++, bdp++) {
+		scc_dev->rbufv[i] = (void __iomem __force *)
+			dma_alloc_coherent(scc_dev->dev,
+					   SCC_MAX_BUFZ,
+					   &scc_dev->rbuf[i],
 					   GFP_KERNEL);
-		bdp->cbd_bufaddr = scc_dev.rbuf[i];
+		bdp->cbd_bufaddr = scc_dev->rbuf[i];
 		bdp->cbd_datlen = 0;
 		bdp->cbd_sc = BD_SC_EMPTY |BD_SC_INTRPT|
 			((i < BD_RNUM - 1) ? 0 : BD_SC_WRAP);
 	}
-	scc_dev.rcur = 0;
+	scc_dev->rcur = 0;
 
 	/*
 	 * ...and the same for transmit.
 	 */
-	for (i = 0, bdp = scc_dev.ring_base + BD_RNUM*sizeof(cbd_t);
+	for (i = 0, bdp = scc_dev->ring_base + BD_RNUM*sizeof(cbd_t);
 			i < BD_TNUM;
 			i++, bdp++) {
-		scc_dev.tbufv[i] = (void __iomem __force *)
-			dma_alloc_coherent(scc_dev.dev,
-					   FCC_MAX_BUFZ,
-					   &scc_dev.tbuf[i],
+		scc_dev->tbufv[i] = (void __iomem __force *)
+			dma_alloc_coherent(scc_dev->dev,
+					   SCC_MAX_BUFZ,
+					   &scc_dev->tbuf[i],
 					   GFP_KERNEL);
-		bdp->cbd_bufaddr = scc_dev.tbuf[i];
+		bdp->cbd_bufaddr = scc_dev->tbuf[i];
 		bdp->cbd_datlen = 0;
 		bdp->cbd_sc = (i < BD_TNUM - 1) ? 0 : BD_SC_WRAP;
 	}
-	scc_dev.tcur = 0;
+	scc_dev->tcur = 0;
 }
 
-struct proc_dir_entry *ent;
-static struct class *fcc_class;
+static struct class *scc_class = NULL;
+static int scc_major = -1;
 static const struct of_device_id fcc_serial_match[];
 
 static int scc_serial_probe(struct platform_device *ofdev)
 {
-	const struct of_device_id *match;
+	//const struct of_device_id *match;
 	const u32 *data;
 	int len;
 	unsigned int irq;
-	void __iomem *cmxfcr;
+	void __iomem *cmxscr;
 	int ret;
 	sccp_t *gp;
+	u32 clkcfg_mask, clkcfg_value;
+	scc_dev_t *scc_dev;
 
+	if (dev_nr >= NUM_OF_SCC_DEV)
+		goto errout2;
+	/*
 	match = of_match_device(scc_serial_match, &ofdev->dev);
 	if (!match)
 		return -EINVAL;
+	*/
 
-	scc_dev.dev = &ofdev->dev;
-	scc_dev.ring_base = (void __iomem __force *)
-		dma_alloc_coherent(
-				scc_dev.dev,
-				BD_NUM * sizeof(cbd_t),
-				&scc_dev.ring_mem_addr,
-				GFP_KERNEL
-				);
+	scc_dev = (scc_dev_t *)kmalloc(sizeof *scc_dev, GFP_KERNEL);
+	if (!scc_dev)
+		goto errout2;
 
-	init_bds();
+	strcpy(scc_dev->name, ofdev->name);
+	printk(KERN_ERR"(MILO)name=%s\n", scc_dev->name);
+	scc_dev->dev = &ofdev->dev;
+	scc_dev->ring_mem_addr = cpm_dpalloc(BD_NUM * sizeof(cbd_t), 8);
+	if (IS_ERR_VALUE(scc_dev->ring_mem_addr))
+		goto errout;
+
+	scc_dev->ring_base = (void __iomem __force *)
+		cpm_dpram_addr(scc_dev->ring_mem_addr);
+
+	init_bds(scc_dev);
 
 	data = of_get_property(ofdev->dev.of_node, "fsl,cpm-command", &len);
 	if (!data || len != 4)
 		goto errout;
-	scc_dev.cmd = *data;
+	scc_dev->cmd = *data;
+
+	data = of_get_property(ofdev->dev.of_node, "fsl,clkcfg_mask", &len);
+	if (!data || len != 4)
+		goto errout;
+	clkcfg_mask = *data;
+
+	data = of_get_property(ofdev->dev.of_node, "fsl,clkcfg_value", &len);
+	if (!data || len != 4)
+		goto errout;
+	clkcfg_value = *data;
 
 	irq = irq_of_parse_and_map(ofdev->dev.of_node, 0);
 	if (irq == NO_IRQ)
 		goto errout;
-	scc_dev.irq = irq;
+	scc_dev->irq = irq;
 
-	scc_dev.hwreg = of_iomap(ofdev->dev.of_node, 0);
-	if (!scc_dev.hwreg)
+	scc_dev->hwreg = of_iomap(ofdev->dev.of_node, 0);
+	if (!scc_dev->hwreg)
 		goto errout;
 
-	scc_dev.sccp =  of_iomap(ofdev->dev.of_node, 1);
-	if (!scc_dev.sccp)
+	scc_dev->sccp =  of_iomap(ofdev->dev.of_node, 1);
+	if (!scc_dev->sccp)
 		goto errout;
-	gp = (sccp_t *)scc_dev.sccp;
+	gp = (sccp_t *)scc_dev->sccp;
 
 	cmxscr = of_iomap(ofdev->dev.of_node, 2);
 	if (!cmxscr)
-		goto errout;
-
-	scc_dev.mem = cpm_dpalloc(64, 32);
-	if (IS_ERR_VALUE(scc_dev.mem))
 		goto errout;
 
 
 	// 1/2. setup SCC pins (done in uboot)
 	//      including TXD RXD RTS CTS
 	// 3. setup CLK pin
-	// 4. connect CLK to SCC (CMXSCR)
-	setbits32(cmxscr, CMXFCR_RF1CS_CLK9|CMXFCR_TF1CS_CLK10);
-	// 4. GFMR
-	out_be32(scc_dev.hwreg, FCC_GFMR_TRX|FCC_GFMR_TTX|FCC_GFMR_CDS|FCC_GFMR_CTSS);
-	// 5. FPSMR
-	// 6. FDSR
+	// 4. NMSI mode, connect CLK to SCC (CMXSCR)
+	clrbits32(cmxscr, clkcfg_mask);
+	setbits32(cmxscr, clkcfg_value);
+	// 4. set GSMR except ENT or ENR
+	//    GSMR_H
+	out_be32(scc_dev->hwreg + 4, SCC_GSMRH_TRX|SCC_GSMRH_TTX|SCC_GSMRH_CDS|SCC_GSMRH_CTSS);
+	//    GSMR_L
+	out_be32(scc_dev->hwreg, 0);
+	// 5. PSMR
+	// (not used)
+	// 6. DSR
+	// (not used)
 	// 7. parm RAM
-	out_be32(&gp->fcc_rbase, scc_dev.ring_mem_addr);
-	out_be32(&gp->fcc_tbase, scc_dev.ring_mem_addr+BD_RNUM*sizeof(cbd_t));
+	out_be16(&gp->scc_rbase, scc_dev->ring_mem_addr);
+	out_be16(&gp->scc_tbase, scc_dev->ring_mem_addr+BD_RNUM*sizeof(cbd_t));
 
-	out_be16(&gp->fcc_mrblr, FCC_MAX_BUFZ);
+	out_8(&gp->scc_rfcr, SCC_GBL|SCC_EB);
+	out_8(&gp->scc_tfcr, SCC_GBL|SCC_EB);
 
-	out_be32(&gp->fcc_rstate, (CPMFCR_GBL | CPMFCR_EB) << 24);
-	out_be32(&gp->fcc_tstate, (CPMFCR_GBL | CPMFCR_EB) << 24);
-
-	out_be16(&gp->fcc_riptr, scc_dev.mem);		/* RIPTR */
-	out_be16(&gp->fcc_tiptr, scc_dev.mem+32);	/* TIPTR */
-
-	out_be16(scc_dev.sccp + 0x58, 0);	/* MFLR */
-	out_be16(scc_dev.sccp + 0x5a, 0);	/* RFTHR */
-	out_be16(scc_dev.sccp + 0x5c, 0);	/* RFCNT */
-	out_be16(scc_dev.sccp + 0x5e, 0);	/* HMASK */
-	// 8. clear FCCE
-	out_be32(scc_dev.hwreg + 0x10, 0xffffffff);
-	// 9. FCCM
-	out_be32(scc_dev.hwreg + 0x14, 0x000a0000);	/* RXF TXB */
-	//10. SCPRR_H (FCC interrupt priority)
-	//11. clear out SIPNR_L
-	//12. SIMR_L (interrupts)
-	//13. issue an INIT TX AND RX PARAMETERS command
-	//14. set GFMR[ENT] and GFMR[ENR]
-
-	ret = cpm_command(scc_dev.cmd, CPM_CR_INIT_TRX);
+	out_be16(&gp->scc_mrblr, SCC_MAX_BUFZ);
+	// 8. CPCR
+	ret = cpm_command(scc_dev->cmd, CPM_CR_INIT_TRX);
 	printk(KERN_ERR"(MILO)cpm_command ret=%d\n", ret);
 	if (ret)
 		goto errout;
-
-	if ((scc_dev.major = register_chrdev(0, "fcc", &scc_dev_fops)) < 0) {
-		printk(KERN_ERR "fcc_serial_probe: Unable to get major %d for device\n", scc_dev.major);
+	// 9. clear SCCE
+	out_be16(scc_dev->hwreg + 0x10, 0xffff);
+	// 10. SCCM
+	out_be16(scc_dev->hwreg + 0x14, 0x0003);	/* TXB RXB */
+	/* Install our interrupt handler. */
+	ret = request_irq(scc_dev->irq, scc_interrupt, IRQF_SHARED,
+			DRV_MODULE_NAME, scc_dev);
+	if (ret) {
+		printk(KERN_ERR"(MILO)Could not allocate IRQ=%d\n",
+				scc_dev->irq);
 		goto errout;
 	}
-	fcc_class = class_create(THIS_MODULE, "fcc");
-	device_create(fcc_class, NULL,
-		      MKDEV(scc_dev.major, 0),
-		      NULL,
-		      "scc");
+	// 11. set GSMR_L[ENT] and GSMR_L[ENR]
+	out_be32(scc_dev->hwreg, SCC_GSMRL_ENR|SCC_GSMRL_ENT);
 
-	ent = proc_create("driver/scc", 0, NULL, &fcc_proc_fops);
-	if (!ent) {
-		printk(KERN_WARNING "rtc: Failed to register with procfs.\n");
+	if (scc_major < 0) {
+		if ((scc_major = register_chrdev(0, DEV_NAME, &scc_dev_fops)) < 0) {
+			printk(KERN_ERR "scc_serial_probe: Unable to get major %d for device\n", scc_major);
+			goto errout;
+		}
 	}
+	if (!scc_class) {
+		scc_class = class_create(THIS_MODULE, scc_dev->name);
+	}
+	scc_dev->minor = ++dev_nr;
+	device_create(scc_class, NULL,
+		      MKDEV(scc_major, dev_nr),
+		      NULL,
+		      scc_dev->name);
 
 	printk(KERN_INFO"(milo)ppc8270 scc driver loaded\n");
 
-	setbits32(scc_dev.hwreg, FCC_GFMR_ENR|FCC_GFMR_ENT);
-
-	/* Install our interrupt handler. */
-	ret = request_irq(scc_dev.irq, fcc_interrupt, IRQF_SHARED,
-			DRV_MODULE_NAME, &scc_dev);
-	if (ret) {
-		printk(KERN_ERR"(MILO)Could not allocate IRQ=%d\n",
-				scc_dev.irq);
-		goto errout;
-	}
-
 	return 0;
 errout:
-	printk(KERN_ERR"(MILO)probe failed\n");
+	kfree(scc_dev);
+errout2:
+	printk(KERN_ERR"(MILO)scc probe failed\n");
 	return -1;
 }
 
-static int fcc_serial_remove(struct platform_device *ofdev)
+static int scc_serial_remove(struct platform_device *ofdev)
 {
-	clrbits32(scc_dev.hwreg, FCC_GFMR_ENR|FCC_GFMR_ENT);
-	free_irq(scc_dev.irq, &scc_dev);
+	scc_dev_t *scc_dev;
+	int i;
 
-	proc_remove(ent);
+	for (i=0; i<=dev_nr; ++i) {
+		scc_dev = scc_dev_array + i;
+		clrbits32(scc_dev->hwreg, SCC_GSMRL_ENR|SCC_GSMRL_ENT);
+		free_irq(scc_dev->irq, scc_dev);
+		device_destroy(scc_class, MKDEV(scc_major, scc_dev->minor));
+	}
 
-	device_destroy(fcc_class, MKDEV(scc_dev.major, 0));
-	class_destroy(fcc_class);
-
-	unregister_chrdev(scc_dev.major, "scc");
+	class_destroy(scc_class);
+	unregister_chrdev(scc_major, DEV_NAME);
 
 	return 0;
 }

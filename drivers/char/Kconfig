@@ -611,5 +611,13 @@ config FS_FCC_SERIAL
 	  This device provides character-level read-write access
 	  to the FCC port via /dev/fccX.
 
+config FS_SCC_SERIAL
+	bool "Freescale SCC transparent mode driver"
+	depends on CPM2
+	default n
+	---help---
+	  This device provides character-level read-write access
+	  to the SCC port via /dev/sccX.
+
 endmenu
 

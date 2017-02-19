@@ -178,6 +178,54 @@
 				fsl,cpm-command = <0x12000000>;
 			};
 
+			scc1: scc1@11a00 {
+				device_type = "serial";
+				compatible = "fsl,mpc8280-scc-serial",
+				             "fsl,cpm2-scc-serial";
+				reg = <0x11a00 0x20 0x8000 0x100 0x11b08 0x1>;
+				interrupts = <40 8>;
+				interrupt-parent = <&PIC>;
+				fsl,cpm-command = <0x00800000>;
+				fsl,clkcfg_mask = <0x3f000000>;
+				fsl,clkcfg_value = <0x37000000>;
+			};
+
+			scc2: scc2@11a20 {
+				device_type = "serial";
+				compatible = "fsl,mpc8280-scc-serial",
+				             "fsl,cpm2-scc-serial";
+				reg = <0x11a20 0x20 0x8100 0x100 0x11b08 0x1>;
+				interrupts = <41 8>;
+				interrupt-parent = <&PIC>;
+				fsl,cpm-command = <0x04a00000>;
+				fsl,clkcfg_mask = <0x003f0000>;
+				fsl,clkcfg_value = <0x002500>;
+			};
+
+			scc3: scc3@11a40 {
+				device_type = "serial";
+				compatible = "fsl,mpc8280-scc-serial",
+				             "fsl,cpm2-scc-serial";
+				reg = <0x11a40 0x20 0x8200 0x100 0x11b08 0x1>;
+				interrupts = <42 8>;
+				interrupt-parent = <&PIC>;
+				fsl,cpm-command = <0x08c00000>;
+				fsl,clkcfg_mask = <0x00003f00>;
+				fsl,clkcfg_value = <0x00002500>;
+			};
+
+			scc4: scc4@11a60 {
+				device_type = "serial";
+				compatible = "fsl,mpc8280-scc-serial",
+				             "fsl,cpm2-scc-serial";
+				reg = <0x11a60 0x20 0x8300 0x100 0x11b08 0x1>;
+				interrupts = <42 8>;
+				interrupt-parent = <&PIC>;
+				fsl,cpm-command = <0x0ce00000>;
+				fsl,clkcfg_mask = <0x0000003f>;
+				fsl,clkcfg_value = <0x00000037>;
+			};
+
 			enet0: ethernet@11320 {
 				device_type = "network";
 				compatible = "fsl,mpc8280-fcc-enet",
