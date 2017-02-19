@@ -105,7 +105,7 @@ static int fcc_dev_close(struct inode *inode, struct file *file)
 	return 0;
 }
 
-int is_sndbuf_available(void)
+static int is_sndbuf_available(void)
 {
 	cbd_t __iomem *bdp;
 	u32 tcur = fcc_dev.tcur;
@@ -150,7 +150,7 @@ static ssize_t fcc_dev_write(struct file *file, const char __user *buf, size_t c
 	return count;
 }
 
-int is_rcvdat_available(void)
+static int is_rcvdat_available(void)
 {
 	cbd_t __iomem *bdp;
 	u32 rcur = fcc_dev.rcur;
@@ -231,7 +231,7 @@ static const struct file_operations fcc_proc_fops = {
 	.release        = single_release,
 };
 
-void init_bds(void)
+static void init_bds(void)
 {
 	cbd_t __iomem *bdp;
 	int i;
