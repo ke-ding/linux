@@ -62,24 +62,24 @@ typedef struct {
 static DECLARE_WAIT_QUEUE_HEAD(scc_write_wq);
 static DECLARE_WAIT_QUEUE_HEAD(scc_read_wq);
 
-static scc_dev_t scc_dev_array[NUM_OF_SCC_DEV];
+static scc_dev_t *scc_dev_array[NUM_OF_SCC_DEV];
 static int dev_nr = -1;
 
-inline static u32 get_scce(scc_dev_t *scc_dev)
+inline static u16 get_scce(scc_dev_t *scc_dev)
 {
-	return in_be32(scc_dev->hwreg+0x10);
+	return in_be16(scc_dev->hwreg+0x10);
 }
 
-inline static void set_scce(scc_dev_t *scc_dev, u32 val)
+inline static void set_scce(scc_dev_t *scc_dev, u16 val)
 {
-	out_be32(scc_dev->hwreg+0x10, val);
+	out_be16(scc_dev->hwreg+0x10, val);
 }
 
 static irqreturn_t scc_interrupt(int irq, void *dev_id)
 {
 	scc_dev_t *scc_dev = (scc_dev_t *)dev_id;
 
-	u32 int_events;
+	u16 int_events;
 	int nr;
 	int handled;
 
@@ -87,7 +87,6 @@ static irqreturn_t scc_interrupt(int irq, void *dev_id)
 	while ((int_events = get_scce(scc_dev)) != 0) {
 		nr++;
 
-	//printk(KERN_ERR"(MILO)fcce=%08x\n", int_events);
 		// clear events
 		set_scce(scc_dev, int_events);
 
@@ -120,8 +119,6 @@ static int is_sndbuf_available(scc_dev_t *scc_dev)
 
 	bdp = scc_dev->ring_base + BD_RNUM*sizeof(cbd_t) + tcur*sizeof(cbd_t);
 	ret = !(in_be16(&bdp->cbd_sc) & BD_SC_READY);
-	//printk(KERN_ERR"(MILO)tcur=%d\n", tcur);
-	//printk(KERN_ERR"(MILO)snd_avail=%d\n", !(bdp->cbd_sc & BD_SC_READY));
 
 	return ret;
 }
@@ -129,7 +126,7 @@ static int is_sndbuf_available(scc_dev_t *scc_dev)
 static ssize_t scc_dev_write(struct file *file, const char __user *buf, size_t count, loff_t *offset)
 {
 	unsigned int minor = iminor(file_inode(file));
-	scc_dev_t *scc_dev = scc_dev_array + minor;
+	scc_dev_t *scc_dev = scc_dev_array[minor];
 
 	cbd_t __iomem *bdp;
 	u32 tcur = scc_dev->tcur;
@@ -155,7 +152,6 @@ static ssize_t scc_dev_write(struct file *file, const char __user *buf, size_t c
 		scc_dev->tcur = 0;
 	else
 		scc_dev->tcur++;
-	//printk(KERN_ERR"(MILO)tcount=%d\n", count);
 
 	return count;
 }
@@ -169,26 +165,13 @@ static int is_rcvdat_available(scc_dev_t *scc_dev)
 	bdp = scc_dev->ring_base + rcur*sizeof(cbd_t);
 	ret = !(in_be16(&bdp->cbd_sc) & BD_SC_EMPTY);
 
-#if 0
-	printk(KERN_ERR"(MILO)rcur=%d\n", rcur);
-	printk(KERN_ERR"(MILO)rcv_avail=%d\n", !(bdp->cbd_sc & BD_SC_EMPTY));
-	printk(KERN_ERR"(MILO)cbd_sc=%04x\n", in_be16(&bdp->cbd_sc));
-
-	printk(KERN_ERR"(MILO)-------\n");
-	bdp = scc_dev->ring_base + 0*sizeof(cbd_t);
-	printk(KERN_ERR"(MILO)0cbd_sc=%04x\n", in_be16(&bdp->cbd_sc));
-	bdp = scc_dev->ring_base + 1*sizeof(cbd_t);
-	printk(KERN_ERR"(MILO)1cbd_sc=%04x\n", in_be16(&bdp->cbd_sc));
-	printk(KERN_ERR"(MILO)-------\n");
-#endif
-
 	return ret;
 }
 
 static ssize_t scc_dev_read(struct file *file, char __user *buf, size_t count, loff_t *offset)
 {
 	unsigned int minor = iminor(file_inode(file));
-	scc_dev_t *scc_dev = scc_dev_array + minor;
+	scc_dev_t *scc_dev = scc_dev_array[minor];
 
 	cbd_t __iomem *bdp;
 	u32 rcur = scc_dev->rcur;
@@ -204,13 +187,11 @@ static ssize_t scc_dev_read(struct file *file, char __user *buf, size_t count, l
 		count = bdp->cbd_datlen;
 	copy_to_user(buf, scc_dev->rbufv[rcur], count);
 	wrap = (rcur < BD_RNUM - 1) ? 0 : BD_SC_WRAP;
-	//setbits16(&bdp->cbd_sc, BD_SC_EMPTY|BD_SC_INTRPT|wrap);
 	out_be16(&bdp->cbd_sc, BD_SC_EMPTY|BD_SC_INTRPT|wrap);
 	if (wrap)
 		scc_dev->rcur = 0;
 	else
 		scc_dev->rcur++;
-	//printk(KERN_ERR"(MILO)tcount=%d\n", count);
 
 	return count;
 }
@@ -278,6 +259,7 @@ static int scc_serial_probe(struct platform_device *ofdev)
 	sccp_t *gp;
 	u32 clkcfg_mask, clkcfg_value;
 	scc_dev_t *scc_dev;
+	char *p;
 
 	if (dev_nr >= NUM_OF_SCC_DEV)
 		goto errout2;
@@ -291,8 +273,11 @@ static int scc_serial_probe(struct platform_device *ofdev)
 	if (!scc_dev)
 		goto errout2;
 
-	strcpy(scc_dev->name, ofdev->name);
-	printk(KERN_ERR"(MILO)name=%s\n", scc_dev->name);
+	for (p=(char *)ofdev->name; *p && *p != '.'; ++p);
+	if (*p)
+		strcpy(scc_dev->name, p+1);
+	else
+		strcpy(scc_dev->name, ofdev->name);
 	scc_dev->dev = &ofdev->dev;
 	scc_dev->ring_mem_addr = cpm_dpalloc(BD_NUM * sizeof(cbd_t), 8);
 	if (IS_ERR_VALUE(scc_dev->ring_mem_addr))
@@ -362,7 +347,6 @@ static int scc_serial_probe(struct platform_device *ofdev)
 	out_be16(&gp->scc_mrblr, SCC_MAX_BUFZ);
 	// 8. CPCR
 	ret = cpm_command(scc_dev->cmd, CPM_CR_INIT_TRX);
-	printk(KERN_ERR"(MILO)cpm_command ret=%d\n", ret);
 	if (ret)
 		goto errout;
 	// 9. clear SCCE
@@ -371,14 +355,14 @@ static int scc_serial_probe(struct platform_device *ofdev)
 	out_be16(scc_dev->hwreg + 0x14, 0x0003);	/* TXB RXB */
 	/* Install our interrupt handler. */
 	ret = request_irq(scc_dev->irq, scc_interrupt, IRQF_SHARED,
-			DRV_MODULE_NAME, scc_dev);
+			scc_dev->name, scc_dev);
 	if (ret) {
 		printk(KERN_ERR"(MILO)Could not allocate IRQ=%d\n",
 				scc_dev->irq);
 		goto errout;
 	}
 	// 11. set GSMR_L[ENT] and GSMR_L[ENR]
-	out_be32(scc_dev->hwreg, SCC_GSMRL_ENR|SCC_GSMRL_ENT);
+	setbits32(scc_dev->hwreg, SCC_GSMRL_ENR|SCC_GSMRL_ENT);
 
 	if (scc_major < 0) {
 		if ((scc_major = register_chrdev(0, DEV_NAME, &scc_dev_fops)) < 0) {
@@ -394,8 +378,9 @@ static int scc_serial_probe(struct platform_device *ofdev)
 		      MKDEV(scc_major, dev_nr),
 		      NULL,
 		      scc_dev->name);
+	scc_dev_array[dev_nr] = scc_dev;
 
-	printk(KERN_INFO"(milo)ppc8270 scc driver loaded\n");
+	printk(KERN_INFO"(milo)ppc8270 %s dev registered\n", scc_dev->name);
 
 	return 0;
 errout:
@@ -411,7 +396,7 @@ static int scc_serial_remove(struct platform_device *ofdev)
 	int i;
 
 	for (i=0; i<=dev_nr; ++i) {
-		scc_dev = scc_dev_array + i;
+		scc_dev = scc_dev_array[i];
 		clrbits32(scc_dev->hwreg, SCC_GSMRL_ENR|SCC_GSMRL_ENT);
 		free_irq(scc_dev->irq, scc_dev);
 		device_destroy(scc_class, MKDEV(scc_major, scc_dev->minor));

@@ -199,7 +199,7 @@
 				interrupt-parent = <&PIC>;
 				fsl,cpm-command = <0x04a00000>;
 				fsl,clkcfg_mask = <0x003f0000>;
-				fsl,clkcfg_value = <0x002500>;
+				fsl,clkcfg_value = <0x00250000>;
 			};
 
 			scc3: scc3@11a40 {
@@ -219,7 +219,7 @@
 				compatible = "fsl,mpc8280-scc-serial",
 				             "fsl,cpm2-scc-serial";
 				reg = <0x11a60 0x20 0x8300 0x100 0x11b08 0x1>;
-				interrupts = <42 8>;
+				interrupts = <43 8>;
 				interrupt-parent = <&PIC>;
 				fsl,cpm-command = <0x0ce00000>;
 				fsl,clkcfg_mask = <0x0000003f>;
@@ -263,7 +263,7 @@
 
 				PHY0: ethernet-phy@0 {
 					interrupt-parent = <&PIC>;
-					interrupts = <23 2>;
+					#interrupts = <23 8>;
 					reg = <0x3>;
 					device_type = "ethernet-phy";
 				};
@@ -280,7 +280,7 @@
 
 				PHY1: ethernet-phy@1 {
 					interrupt-parent = <&PIC>;
-					interrupts = <24 2>;
+					#interrupts = <24 8>;
 					reg = <0x3>;
 					device_type = "ethernet-phy";
 				};

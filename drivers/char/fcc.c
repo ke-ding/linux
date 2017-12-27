@@ -368,7 +368,7 @@ static int fcc_serial_probe(struct platform_device *ofdev)
 	//14. set GFMR[ENT] and GFMR[ENR]
 
 	ret = cpm_command(fcc_dev.cmd, CPM_CR_INIT_TRX);
-	printk(KERN_ERR"(MILO)cpm_command ret=%d\n", ret);
+	//printk(KERN_ERR"(MILO)cpm_command ret=%d\n", ret);
 	if (ret)
 		goto errout;
 
