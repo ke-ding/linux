@@ -506,6 +506,7 @@ static void ev_error(struct net_device *dev, u32 int_events)
 	struct fs_enet_private *fep = netdev_priv(dev);
 
 	dev_warn(fep->dev, "FS_ENET ERROR(s) 0x%x\n", int_events);
+	fcc_cr_cmd(fep, CPM_CR_RESTART_TX);	// by Milo
 }
 
 static int get_regs(struct net_device *dev, void *p, int *sizep)
